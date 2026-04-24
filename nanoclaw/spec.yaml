@@ -10,6 +10,7 @@ network:
     - "*.whatsapp.net"
     - registry.npmjs.org
     - "*.npmjs.org"
+    - nanoclaw.dev
 
 environment:
   variables:
