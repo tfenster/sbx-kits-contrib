@@ -1,10 +1,11 @@
 #!/bin/bash
 # sbx-codex-detach <sandbox-name>
 #
-# Reverses sbx-codex-attach: removes the per-sandbox ssh config snippet and
-# known_hosts file under ~/.sbx/ssh/codex/. Does NOT unpublish the sshd
-# port or touch the sandbox itself — port publishing follows the sandbox
-# lifecycle.
+# Reverses sbx-codex-attach: removes the per-sandbox ssh config snippet,
+# known_hosts file, and port cache under ~/.sbx/ssh/codex/. Does NOT
+# unpublish the sshd port, remove the shared proxy.sh, or touch the
+# sandbox itself — port publishing follows the sandbox lifecycle, and
+# proxy.sh is shared with any other attached sandboxes.
 
 set -euo pipefail
 
@@ -17,9 +18,10 @@ sandbox="$1"
 dir="$HOME/.sbx/ssh/codex"
 conf="$dir/${sandbox}.conf"
 khf="$dir/${sandbox}.known_hosts"
+cache="$dir/${sandbox}.port"
 
 removed=0
-for f in "$conf" "$khf"; do
+for f in "$conf" "$khf" "$cache"; do
     if [ -e "$f" ]; then
         rm -- "$f"
         echo "removed: $f"

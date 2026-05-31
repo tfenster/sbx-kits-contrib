@@ -32,96 +32,153 @@ A full Codex GUI experience pointed at an sbx sandbox, including:
   port on every connect, so you can stop a sandbox between sessions
   and pick up where you left off.
 
-The kit ships two host-side helpers under `bin/` —
-`sbx-codex-attach` and `sbx-codex-detach` — that handle port
-publishing and per-sandbox SSH config wiring so the GUI flow is two
-commands per sandbox.
+## Quick start
 
-## One-time host setup
+Install `jq` (`brew install jq` — `nc` ships with macOS), then drop
+this in your `~/.bashrc` / `~/.zshrc`:
 
-Symlink the helpers onto your PATH:
+```bash
+# Create-or-wake a sandbox and wire it for the Codex Mac GUI. Idempotent;
+# safe to run repeatedly. After it returns, add an SSH Connection in the
+# Codex app using the printed alias name.
+sbx_codex() {
+    local name="${1:?usage: sbx_codex <name> [path]}"
+    local path="${2:-.}"
+    local kit="git+https://github.com/docker/sbx-kits-contrib.git#dir=codex-app-server"
+
+    if ! sbx ls -q | grep -qx "$name"; then
+        sbx create --clone --kit "$kit" --name "$name" codex "$path" || return
+    else
+        sbx run -d "$name" >/dev/null || return
+    fi
+
+    # Self-heal: kit-added-post-create sandboxes don't always fire startup
+    # hooks on wake. No-op when sshd's already up.
+    sbx exec "$name" -- /home/agent/.local/bin/refresh-authorized-keys 2>/dev/null || true
+    sbx exec -u 0 "$name" -- sh -c \
+        'pgrep -x sshd >/dev/null || { mkdir -p /var/run/sshd && /usr/sbin/sshd > /tmp/sshd.log 2>&1; }' || true
+
+    # Publish sandbox port 22 (ephemeral host port) if not already.
+    sbx ports "$name" --json | jq -e '.[]|select(.sandbox_port==22 and .host_ip=="127.0.0.1")' >/dev/null \
+        || sbx ports "$name" --publish 22/tcp >/dev/null
+
+    local dir="$HOME/.sbx/ssh/codex"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    local sbx_bin nc_bin jq_bin
+    sbx_bin=$(command -v sbx); nc_bin=$(command -v nc); jq_bin=$(command -v jq)
+
+    # Shared self-healing ProxyCommand: fast path reads cached port +
+    # `nc -z` probe; slow path wakes the sandbox, restarts sshd if dead,
+    # re-publishes the port, refreshes the cache.
+    cat > "$dir/proxy.sh" <<EOF
+#!/bin/sh
+NAME="\$1"; CACHE="$dir/\${NAME}.port"
+port=\$(cat "\$CACHE" 2>/dev/null)
+if [ -n "\$port" ] && ${nc_bin} -z -G 1 localhost "\$port" 2>/dev/null; then
+    exec ${nc_bin} localhost "\$port"
+fi
+${sbx_bin} exec "\$NAME" -- pgrep -x sshd >/dev/null 2>&1 || {
+    ${sbx_bin} exec "\$NAME" -- /home/agent/.local/bin/refresh-authorized-keys 2>/dev/null
+    ${sbx_bin} exec -u 0 "\$NAME" -- sh -c 'pgrep -x sshd >/dev/null || { mkdir -p /var/run/sshd && /usr/sbin/sshd > /tmp/sshd.log 2>&1; }'
+}
+${sbx_bin} ports "\$NAME" --json | ${jq_bin} -e '.[]|select(.sandbox_port==22 and .host_ip=="127.0.0.1")' >/dev/null \\
+    || ${sbx_bin} ports "\$NAME" --publish 22/tcp >/dev/null
+port=\$(${sbx_bin} ports "\$NAME" --json | ${jq_bin} -r '.[]|select(.sandbox_port==22 and .host_ip=="127.0.0.1").host_port' | head -1)
+printf '%s' "\$port" > "\$CACHE"
+exec ${nc_bin} localhost "\$port"
+EOF
+    chmod 700 "$dir/proxy.sh"
+
+    : > "$dir/$name.known_hosts"; chmod 600 "$dir/$name.known_hosts"
+    rm -f "$dir/$name.port"
+    cat > "$dir/$name.conf" <<EOF
+Host $name
+    HostName localhost
+    User agent
+    ProxyCommand $dir/proxy.sh $name
+    HostKeyAlias $name
+    UserKnownHostsFile $dir/$name.known_hosts
+    StrictHostKeyChecking accept-new
+EOF
+    chmod 600 "$dir/$name.conf"
+
+    # Ensure ~/.ssh/config picks up our include (idempotent).
+    local sc="$HOME/.ssh/config"
+    mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+    touch "$sc"; chmod 600 "$sc"
+    if ! grep -Fxq 'Include ~/.sbx/ssh/codex/*.conf' "$sc"; then
+        { printf '# Added by sbx_codex\nInclude ~/.sbx/ssh/codex/*.conf\n\n'; cat "$sc"; } > "$sc.tmp" && mv "$sc.tmp" "$sc"
+        chmod 600 "$sc"
+    fi
+
+    echo "ready — add SSH Connection in Codex Mac app:  Host: $name"
+}
+```
+
+Then run a sandbox:
+
+```console
+$ sbx_codex myproject ~/myproject
+ready — add SSH Connection in Codex Mac app:  Host: myproject
+```
+
+In the Codex Mac app, **Connections → Add SSH Connection**, enter
+`myproject` as the host. Auth comes from your SSH agent (1Password,
+ssh-agent, …) — no on-disk identity file needed.
+
+That's it. Subsequent invocations of `sbx_codex myproject` are
+idempotent — they wake the sandbox if it stopped, refresh sshd if
+needed, and re-resolve the host port. You can have multiple sandboxes
+attached at once; each gets its own alias.
+
+## Manual install (without modifying your shell rc)
+
+If you'd rather not paste a function into your rc, the same logic is
+shipped as standalone scripts under `bin/`:
 
 ```console
 $ ln -s $(pwd)/bin/sbx-codex-{attach,detach} ~/.local/bin/
 ```
 
-Add an `Include` to the top of `~/.ssh/config` so the helpers' per-sandbox
-config snippets get picked up (by both OpenSSH and the Codex app, which
-parses the same file):
-
-```sshconfig
-Include ~/.sbx/ssh/codex/*.conf
-```
-
-Helper dependencies: `jq` and `nc` (`brew install jq` — `nc` ships with
-macOS).
-
-## Per-sandbox workflow
-
-Create the sandbox with the kit (`sbx create` boots it without
-attaching, which is what you want for GUI-driven use):
+Then per sandbox:
 
 ```console
 $ sbx create --kit "git+https://github.com/docker/sbx-kits-contrib.git#dir=codex-app-server" --name myproject codex ~/myproject
-```
-
-Attach it for the GUI:
-
-```console
 $ sbx-codex-attach myproject
-attached: myproject
-  config:       /Users/you/.sbx/ssh/codex/myproject.conf
-  known_hosts:  /Users/you/.sbx/ssh/codex/myproject.known_hosts
-…
-```
-
-In the Codex Mac app, **Connections → Add SSH Connection**, enter
-`myproject` as the host. Auth comes from whatever's in your SSH
-agent (1Password, ssh-agent, …) — no on-disk identity file needed.
-
-When you stop and want to wake the sandbox again, use `sbx run -d`
-(detached) rather than `sbx exec`:
-
-```console
-$ sbx stop myproject
-…
-$ sbx run -d myproject       # detached; sandbox stays up after this returns
-$ sbx-codex-attach myproject # re-resolve port (helper is idempotent)
-```
-
-`sbx exec`-induced wake skips re-binding the forwarded SSH agent
-socket (see [docker/sandboxes#3190](https://github.com/docker/sandboxes/issues/3190))
-which can leave the kit's authorized_keys refresh in a stale state.
-`sbx run -d` does a full sandbox start.
-
-When you're done with the sandbox's GUI integration:
-
-```console
+# … later, when done with the GUI integration for this sandbox …
 $ sbx-codex-detach myproject
 ```
 
-(`detach` leaves the sandbox and its port publishing alone; it only
-removes the ssh-config snippet and known_hosts file. Orphans are also
-auto-pruned on the next `sbx-codex-attach` invocation.)
+The first `sbx-codex-attach` run adds the `Include ~/.sbx/ssh/codex/*.conf`
+line to `~/.ssh/config` automatically.
 
 ## What the helpers do
 
 `sbx-codex-attach <name>`:
-- Publishes sandbox port 22 to an ephemeral host port (if not already
-  published).
-- Writes `~/.sbx/ssh/codex/<name>.conf` with a `ProxyCommand` that
-  resolves the host port dynamically on each connect via
-  `sbx ports <name> --json` — so sandbox restarts that change the host
-  port still work without re-attaching.
-- Sets `HostKeyAlias <name>` and a per-sandbox
-  `UserKnownHostsFile`, so known_hosts entries survive port changes
-  and are easy to nuke per sandbox.
+- Adds `Include ~/.sbx/ssh/codex/*.conf` to `~/.ssh/config` on first run.
+- Publishes sandbox port 22 to an ephemeral host port if not already
+  published.
+- Writes `~/.sbx/ssh/codex/<name>.conf` pointing at a shared
+  self-healing `proxy.sh` wrapper:
+  - **Fast path** (steady state): reads a cached host port, probes it
+    with `nc -z`, exec's `nc` — no sbx round trips, ~50ms.
+  - **Slow path** (sandbox stopped / sshd dead / port unmapped): wakes
+    the sandbox, fires the kit's startup hooks if they didn't (works
+    around the kit-added-post-create gap), re-publishes port 22 if
+    needed, refreshes the cache, exec's `nc`. ~1s.
+- Sets `HostKeyAlias <name>` and a per-sandbox `UserKnownHostsFile`,
+  so known_hosts entries survive port changes and are easy to nuke
+  per sandbox.
+- Sweeps orphan files for sandboxes that no longer exist.
 
 `sbx-codex-detach <name>`:
-- Removes the two files under `~/.sbx/ssh/codex/`. Idempotent.
+- Removes the per-sandbox conf, known_hosts, and port cache under
+  `~/.sbx/ssh/codex/`. Leaves the shared `proxy.sh` alone (used by
+  other attached sandboxes). Idempotent.
 
 This means **parallel sandboxes work natively** — each gets its own
-ephemeral host port and its own GUI alias, no conflicts.
+ephemeral host port, its own GUI alias, and its own port cache, no
+conflicts.
 
 ## How authentication works
 
