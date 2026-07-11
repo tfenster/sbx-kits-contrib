@@ -64,7 +64,10 @@ The outbound allowlist is intentionally narrow and currently includes:
 - `*.dev.azure.com`
 - `*.visualstudio.com`
 - `dc.services.visualstudio.com`
+- `registry.npmjs.org`
 - `aka.ms`
+
+The `npmjs.org` allow is required because the Azure DevOps MCP is `npmx` based
 
 If your workflow needs additional Azure hosts, fork this kit and extend
 `network.allowedDomains`
