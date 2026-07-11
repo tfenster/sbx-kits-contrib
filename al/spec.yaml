@@ -1,0 +1,18 @@
+schemaVersion: "1"
+kind: mixin
+name: al
+displayName: AL (Business Central)
+description: altool installation
+
+network:
+  allowedDomains:
+    - dot.net
+    - ci.dot.net
+    - builds.dotnet.microsoft.com
+    - api.nuget.org
+
+commands:
+  install:
+    - command: "curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 && /home/agent/.dotnet/dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools"
+      user: "1000"
+      description: Install altool
