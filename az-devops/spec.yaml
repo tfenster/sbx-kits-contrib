@@ -11,7 +11,7 @@ network:
     - "*.visualstudio.com"
     - dc.services.visualstudio.com
     - aka.ms
-    - registry.nmpjs.org
+    - registry.npmjs.org
   serviceDomains:
     "*.dev.azure.com": az-devops
     "*.visualstudio.com": az-devops
