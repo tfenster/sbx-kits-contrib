@@ -9,7 +9,9 @@ network:
     - dot.net
     - ci.dot.net
     - builds.dotnet.microsoft.com
+    - dotnetcli.azureedge.net
     - api.nuget.org
+    - globalcdn.nuget.org
 
 commands:
   install:
