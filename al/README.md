@@ -55,8 +55,7 @@ agent@sandbox:~$ al launchmcpserver --transport stdio .
 The trailing `.` is the AL project directory the server operates on.
 
 To let an agent use it, register the server in an `.mcp.json` at the root
-of your workspace. The repo ships an example at
-[`.mcp.json`](../.mcp.json):
+of your AL workspace. It should look like this:
 
 ```json
 {
